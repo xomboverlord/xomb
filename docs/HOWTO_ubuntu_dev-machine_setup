@@ -1,0 +1,146 @@
+Instructions for setting up XOmB development machine on a computer running Ubuntu (tested with 11.04)
+
+NOTE: To add directories to your $PATH in an easier way search for 'pathmunge function'. It helps a lot.
+
+1.  Let's build the tools needed for building XOmB:
+    We are going to build the tools from source and thus we need the build dependencies for all of them. This can be achieved through executing the following command in a terminal:
+    
+        COMMAND:
+        sudo aptitude build-dep newlib-source bochs grub llvm ldc binutils
+     
+    Which will install the dependencies. There's a bunch of them, mind you.
+    
+    There are also some other packages that are needed:
+    
+        COMMAND:
+        sudo aptitude install gdc yasm git mercurial cmake-curses-gui
+     
+2.  Then it's a matter of cloning the git-repo with the automated build-script for the tools:
+
+        COMMANDS:
+        git clone https://github.com/xomboverlord/buildtools.git
+        cd buildtools
+        ./build.sh
+        
+    This will result in a folder /local/bin inside the buildtools directory, within which the binaries are created.
+        
+    This directory (/bin) need to be added to your $PATH
+        
+3.  Then we are going to need the latest ldc, which needs the latest llvm. We achieve this by:
+    
+    a.  compile and install llvm:
+        
+        COMMANDS:
+        wget http://llvm.org/releases/2.9/llvm-2.9.tgz
+        tar -xvzf llvm-2.9.tgz
+        mkdir llvm-obj
+        cd llvm-obj
+        ../llvm-2.9/configure --enable-optimized --enable-assertions
+        make
+        su -c 'make install'
+        cd ..
+        
+    b.  download ldc and install it:
+    
+        COMMANDS:
+        hg clone http://bitbucket.org/lindquist/ldc
+        cd ldc
+        ccmake ./
+        
+        NOTE: if that doesn't work, try first executing 
+            
+            cmake ./ 
+            
+        and then 
+            
+            ccmake ./
+            
+        again.
+        
+        In the GUI for ccmake, press 'c' to configure and then 'g' to exit. Then:
+        
+            COMMAND:
+            make
+            
+        Also, the /ldc/bin directory needs to be added to your $PATH.
+        
+        Additional info can be found here:
+        
+            http://www.dsource.org/projects/ldc/wiki/BuildInstructions
+            
+        From which all above is derived.
+        
+================================================================================
+        Troubleshooting:
+            If you get segmentation faults when compiling XOmB, you need to apply a patch to ldc. This is accomplished through:
+                1.  create a file in the /ldc directory with a name with .patch as a file ending:
+                
+                    touch dmd_regression_fix.patch
+                
+                2.  paste the following code inside the created file.
+
+--- a/dmd/func.c        Thu May 05 20:56:46 2011 -0600
++++ b/dmd/func.c        Thu May 12 12:18:44 2011 -0400
+@@ -1483,7 +1483,7 @@
+             if (isSynchronized())
+             {
+                 AggregateDeclaration *ad = isThis();
+-                ClassDeclaration *cd = ad ? ad->isClassDeclaration() : NULL;
++                ClassDeclaration *cd = ad ? ad->isClassDeclaration() : parent->isClassDeclaration();
+                 if (!cd)
+                     error("synchronized function %s must be a member of a class", toChars());
+
+                3.  patch the file:
+                
+                    patch -p1 < dmd_regression_fix.patch
+                                     
+================================================================================
+4.  OK, time for the build tool - dsss. XOmB devs uses the 0.78 build:
+
+        COMMAND:
+        wget http://svn.dsource.org/projects/dsss/downloads/0.78/dsss-0.78-x86-gnuWlinux.tar.bz2
+        tar zxvf dsss-0.78-x86-gnuWlinux.tar.bz2
+        
+        add the dsss-0.78-x86-gnuWlinux/bin to your $PATH.
+
+5.  Time to build the virtualization software, which is bochs. Refer to this page:
+
+        http://wiki.xomb.org/index.php?title=Bochs
+    
+    -OR-
+    
+    Follow these instructions:
+
+    1.	Execute these commands:
+    
+    	COMMANDS:
+    	svn co https://bochs.svn.sourceforge.net/svnroot/bochs/trunk bochs
+		cd bochs/bochs
+		./configure --enable-pci --enable-debugger --enable-x86-64 --enable-smp --enable-ne2000
+		make
+		make install
+		
+6.  Then we should be able to compile the kernel and user space apps:
+        
+        COMMANDS:
+        cd xomb/build
+        ./configure x86_64 
+        
+            -OR-
+            
+        ./configure x86
+        
+        	And then build it:
+        
+        ../build.sh
+================================================================================
+        Troubleshooting
+            It may be the case that it will complain about 
+            
+                'ls: cannot access dsss_objs/O/*.o: No such file or directory'
+                
+            Then, we have to mess about in the dsss.conf files for each app under the /xomb/app/d/ directory, i.e. go in in each folder, like 'hello', 'init', 'posix' and 'xsh', open the dsss.conf file for editing and change all ls-commands to stat folder 'G' instead of folder 'O' for *.o.
+            
+            That should take care of it. Try executing the build.sh again.
+================================================================================
+
