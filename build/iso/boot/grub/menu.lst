@@ -126,4 +126,4 @@ hiddenmenu
 title		XOmB
 kernel		/boot/xomb
 module		/binaries/init
-module		/kernel/LICENSE
+module		/LICENSE
