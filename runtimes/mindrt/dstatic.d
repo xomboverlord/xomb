@@ -650,51 +650,11 @@ Array _adReverse(Array a, size_t szelem) {
 }
 
 int _adEq(Array a1, Array a2, TypeInfo ti) {
-	if(a1.length != a2.length)
-		return 0;				// not equal
-
-	TypeInfo elementType = ti.next();
-	auto sz = elementType.tsize();
-	auto p1 = a1.data;
-	auto p2 = a2.data;
-
-	if(sz == 1)
-		// We should really have a ti.isPOD() check for this
-		return (memcmp(p1, p2, a1.length) == 0);
-
-	for(size_t i = 0; i < a1.length; i++) {
-		if(!ti.equals(p1 + i * sz, p2 + i * sz))
-			return 0;			// not equal
-	}
-
-	return 1;					// equal
+  return ti.equals(&a1, &a2);
 }
 
 int _adCmp(Array a1, Array a2, TypeInfo ti) {
-	//printf("adCmp()\n");
-	auto len = a1.length;
-	if (a2.length < len)
-		len = a2.length;
-	auto sz = ti.tsize();
-	void *p1 = a1.data;
-	void *p2 = a2.data;
-
-	if (sz == 1) {
-		// We should really have a ti.isPOD() check for this
-		auto c = memcmp(p1, p2, len);
-		if (c)
-			return c;
-	}
-	else {
-		for (size_t i = 0; i < len; i++) {
-			auto c = ti.compare(p1 + i * sz, p2 + i * sz);
-			if (c)
-				return c;
-		}
-	}
-	if (a1.length == a2.length)
-		return 0;
-	return (a1.length > a2.length) ? 1 : -1;
+  return ti.compare(&a1, &a2);
 }
 
 Array _adSort(Array a, TypeInfo ti) {
