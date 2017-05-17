@@ -1,4 +1,4 @@
-h1. Welcome to XOmB! (It's pronounced 'zombie,' by the way...)
+h1. Welcome to XOmB! (It's pronounced 'zombie', by the way...)
 
 XOmB is an exokernel operating system written in the D programming language. It's primarily being developed by students at the University of Pittsburgh.
 
