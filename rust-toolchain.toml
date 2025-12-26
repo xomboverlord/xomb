@@ -1,0 +1,13 @@
+[toolchain]
+channel = "nightly"
+components = [
+    "rust-src",
+    "rustfmt",
+    "clippy",
+    "llvm-tools-preview",
+]
+targets = [
+    "x86_64-unknown-uefi",
+    "x86_64-unknown-linux-gnu",  # For host-side unit tests
+]
+profile = "minimal"

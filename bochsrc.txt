@@ -1,0 +1,56 @@
+# Bochs configuration for XOmB exokernel (Multiboot2)
+#
+# Usage: make bochs
+#
+# This configuration boots the multiboot2 kernel using a GRUB-based disk image.
+
+# CPU configuration - 64-bit mode
+cpu: model=core2_penryn_t9600, count=1, ips=50000000, reset_on_triple_fault=1
+
+# Memory: 512 MB
+memory: guest=512, host=512
+
+# BIOS (no fastboot for better CD-ROM compatibility)
+romimage: file=$BXSHARE/BIOS-bochs-latest
+vgaromimage: file=$BXSHARE/VGABIOS-lgpl-latest.bin
+
+# Boot from CD-ROM (ISO image)
+boot: cdrom
+
+# CD-ROM with GRUB bootable ISO
+ata0: enabled=true, ioaddr1=0x1f0, ioaddr2=0x3f0, irq=14
+ata0-master: type=cdrom, path="xomb.iso", status=inserted
+
+# Display - use X11 with debug GUI
+display_library: x, options="gui_debug"
+vga: extension=vbe, update_freq=15, realtime=1
+
+# Serial port - output to file for debugging
+com1: enabled=true, mode=file, dev=serial.log
+
+# Enable magic breakpoint (xchg bx, bx)
+magic_break: enabled=1
+
+# Mouse and keyboard
+mouse: enabled=false
+keyboard: type=mf, serial_delay=250, paste_delay=100000
+
+# Clock
+clock: sync=realtime, time0=local
+
+# Logging
+log: bochs.log
+debugger_log: debugger.log
+
+# Port E9 hack - output to console (useful for early debugging)
+port_e9_hack: enabled=1
+
+# Panic behavior
+panic: action=ask
+error: action=report
+info: action=report
+debug: action=ignore
+
+# Debug controls (if using Bochs debugger)
+# Press Ctrl+C in Bochs to enter debugger
+# Commands: c (continue), s (step), b (breakpoint), r (registers)

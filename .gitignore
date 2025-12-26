@@ -1,0 +1,36 @@
+# Build artifacts
+/target/
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# UEFI/Emulator files
+/esp/
+/esp.img
+/OVMF_VARS.fd
+
+# Bochs artifacts
+bochs.log
+debugger.log
+serial.log
+bx_enh_dbg.ini
+
+# Lock files
+esp.img.lock
+
+# Build artifacts
+/iso_staging/
+/boot_staging/
+*.iso
+
+# Backup files
+*.bak
+*.orig
+
+# Cargo lock (optional for binaries, usually committed)
+# Cargo.lock

@@ -1,0 +1,53 @@
+[package]
+name = "xomb"
+version = "0.1.0"
+edition = "2024"
+authors = ["Your Name <you@example.com>"]
+description = "A Rust-based exokernel for x86_64"
+
+[dependencies]
+log = "0.4"
+spin = "0.9"              # Spinlock for no_std
+
+# UEFI dependencies (only for UEFI build)
+uefi = { version = "0.33", features = ["alloc", "logger", "global_allocator"], optional = true }
+uefi-raw = { version = "0.9", optional = true }
+
+[dev-dependencies]
+# For host-side unit testing
+
+[features]
+default = []
+uefi = ["dep:uefi", "dep:uefi-raw"]
+multiboot2 = []
+integration-test = []     # Enable for integration tests in emulator
+
+# Kernel library (unit-testable on host)
+[lib]
+name = "xomb"
+path = "src/lib.rs"
+test = true
+
+# UEFI binary
+[[bin]]
+name = "xomb-uefi"
+path = "src/main.rs"
+required-features = ["uefi"]
+test = false
+
+# Multiboot2 binary (for Bochs/GRUB)
+[[bin]]
+name = "xomb-multiboot2"
+path = "src/multiboot2_main.rs"
+required-features = ["multiboot2"]
+test = false
+
+[profile.dev]
+panic = "abort"
+opt-level = 1             # Some optimization even in dev (helps with code size)
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "z"           # Optimize for size
