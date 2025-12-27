@@ -9,6 +9,72 @@
 #[cfg(test)]
 extern crate std;
 
+// Compiler-required memory intrinsics for no_std environments
+#[cfg(not(test))]
+mod intrinsics {
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+        let mut i = 0;
+        while i < n {
+            unsafe {
+                *dest.add(i) = *src.add(i);
+            }
+            i += 1;
+        }
+        dest
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+        if src < dest as *const u8 {
+            // Copy backwards to handle overlapping regions
+            let mut i = n;
+            while i > 0 {
+                i -= 1;
+                unsafe {
+                    *dest.add(i) = *src.add(i);
+                }
+            }
+        } else {
+            // Copy forwards
+            let mut i = 0;
+            while i < n {
+                unsafe {
+                    *dest.add(i) = *src.add(i);
+                }
+                i += 1;
+            }
+        }
+        dest
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn memset(dest: *mut u8, c: i32, n: usize) -> *mut u8 {
+        let mut i = 0;
+        while i < n {
+            unsafe {
+                *dest.add(i) = c as u8;
+            }
+            i += 1;
+        }
+        dest
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+        let mut i = 0;
+        while i < n {
+            let a = unsafe { *s1.add(i) };
+            let b = unsafe { *s2.add(i) };
+            if a != b {
+                return a as i32 - b as i32;
+            }
+            i += 1;
+        }
+        0
+    }
+}
+
 // Re-export alloc for heap allocations (available after boot services)
 #[cfg(any(feature = "uefi", test))]
 extern crate alloc;
@@ -79,6 +145,11 @@ pub fn kernel_init(info: &BootInfo) -> ! {
     writeln!(serial, "    Free memory: {} MB / {} MB",
              free_mem / (1024 * 1024),
              total_mem / (1024 * 1024)).ok();
+
+    // Initialize interrupt handling
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Initializing interrupt handling...").ok();
+    arch::x86_64::interrupts::init();
 
     // Test allocating a few frames
     writeln!(serial, "").ok();
@@ -191,6 +262,25 @@ pub fn kernel_init(info: &BootInfo) -> ! {
         Err(e) => {
             writeln!(serial, "      Frame allocation failed: {:?}", e).ok();
         }
+    }
+
+    // Reload GDT to higher-half address before removing identity mapping
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Reloading GDT to higher-half...").ok();
+    arch::x86_64::gdt::reload();
+    writeln!(serial, "    GDT reloaded").ok();
+
+    // Remove identity mapping - no longer needed now that we're in higher-half
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Removing identity mapping...").ok();
+    memory::paging::remove_identity_mapping();
+
+    // Verify PML4[0] is now empty
+    let pml4_0 = memory::paging::read_pml4(0);
+    if pml4_0.is_present() {
+        writeln!(serial, "    WARNING: PML4[0] still present!").ok();
+    } else {
+        writeln!(serial, "    Identity mapping removed (PML4[0] cleared)").ok();
     }
 
     writeln!(serial, "").ok();

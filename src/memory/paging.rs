@@ -427,6 +427,18 @@ pub fn flush_tlb() {
     }
 }
 
+/// Remove the identity mapping at PML4[0]
+///
+/// This should be called after the kernel is fully running in the higher-half
+/// and no longer needs the identity mapping set up during boot.
+pub fn remove_identity_mapping() {
+    // Clear PML4[0]
+    write_pml4(0, PageTableEntry::empty());
+
+    // Flush TLB to ensure the change takes effect
+    flush_tlb();
+}
+
 // ============================================================================
 // Page Table Creation and Mapping
 // ============================================================================

@@ -1,5 +1,8 @@
 //! x86_64 architecture support
 
+pub mod interrupts;
+pub mod gdt;
+
 /// Halt the CPU until the next interrupt
 #[inline]
 pub fn hlt() {
