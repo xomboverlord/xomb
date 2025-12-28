@@ -219,10 +219,17 @@ fn init_page_table(pml4_phys: PhysAddr) -> Result<(), ProcessError> {
         }
 
         // Copy kernel-space entries (256-511) from current PML4
-        // These include the recursive mapping (510) and kernel mapping (511)
+        // EXCEPT for entry 510 (recursive mapping) which needs to point to THIS PML4
         for i in 256..512 {
-            let entry = paging::read_pml4(i);
-            core::ptr::write_volatile(pml4_ptr.add(i), entry.bits());
+            if i == 510 {
+                // Set recursive mapping to point to this new PML4 itself
+                // Use PRESENT | WRITABLE flags (same as kernel recursive mapping)
+                let self_ref_entry = pml4_phys.as_u64() | flags::PRESENT | flags::WRITABLE;
+                core::ptr::write_volatile(pml4_ptr.add(i), self_ref_entry);
+            } else {
+                let entry = paging::read_pml4(i);
+                core::ptr::write_volatile(pml4_ptr.add(i), entry.bits());
+            }
         }
     }
 
@@ -318,6 +325,96 @@ pub fn switch_to_kernel() {
             "mov cr3, {}",
             in(reg) kernel.page_table.as_u64(),
             options(nostack, preserves_flags)
+        );
+    }
+}
+
+/// Jump to user mode (ring 3)
+///
+/// This uses IRETQ to transition from ring 0 to ring 3.
+///
+/// # Arguments
+/// * `entry` - User code entry point
+/// * `stack` - User stack pointer
+///
+/// # Safety
+/// The entry point and stack must be valid mapped addresses in user space.
+/// The current process's page table must have proper user mappings.
+pub unsafe fn jump_to_user(entry: u64, stack: u64) -> ! {
+    use crate::arch::x86_64::gdt;
+    use crate::serial::SerialPort;
+    use core::fmt::Write;
+
+    let user_cs = gdt::user_cs() as u64;
+    let user_ds = gdt::user_ds() as u64;
+
+    // Debug: Print what we're about to push
+    let mut serial = unsafe { SerialPort::new(0x3F8) };
+    writeln!(serial, "    IRETQ frame: SS={:#x} RSP={:#x} RFLAGS=0x202 CS={:#x} RIP={:#x}",
+             user_ds, stack, user_cs, entry).ok();
+
+    // Verify the entry point is mapped and accessible
+    use crate::memory::paging;
+    use crate::memory::VirtAddr;
+    let entry_virt = VirtAddr::new(entry);
+    if let Some((phys, size, flags)) = paging::get_mapping_info(entry_virt) {
+        writeln!(serial, "    Entry mapping: phys={:#x} size={:?} flags={:#x}", phys, size, flags).ok();
+    } else {
+        writeln!(serial, "    WARNING: Entry point {:#x} is NOT MAPPED!", entry).ok();
+    }
+
+    // Verify the stack is mapped
+    let stack_virt = VirtAddr::new(stack - 8);  // Stack will be decremented
+    if let Some((phys, size, flags)) = paging::get_mapping_info(stack_virt) {
+        writeln!(serial, "    Stack mapping: phys={:#x} size={:?} flags={:#x}", phys, size, flags).ok();
+    } else {
+        writeln!(serial, "    WARNING: Stack {:#x} is NOT MAPPED!", stack).ok();
+    }
+
+    // Flush TLB to ensure all page table changes are visible
+    // This reloads CR3 which flushes the entire TLB
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack, preserves_flags));
+        core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
+    }
+
+    // IRETQ expects the stack to contain (top to bottom):
+    // [RSP+0]  RIP   - last pushed, first popped
+    // [RSP+8]  CS
+    // [RSP+16] RFLAGS
+    // [RSP+24] RSP
+    // [RSP+32] SS    - first pushed, last popped
+    //
+    // Note: DS/ES/FS/GS must be set to valid user selectors before IRETQ
+    // when transitioning to ring 3. Using null (0) is valid in 64-bit mode.
+    unsafe {
+        core::arch::asm!(
+            // Set DS/ES/FS/GS to null using r11 - avoid clobbering input registers
+            "xor r11d, r11d",
+            "mov ds, r11w",
+            "mov es, r11w",
+            "mov fs, r11w",
+            "mov gs, r11w",
+
+            // Memory barrier to ensure all stores are complete
+            "mfence",
+
+            // Build IRETQ frame on stack
+            "push {user_ss}",   // SS
+            "push {stack}",     // RSP
+            "push 0x202",       // RFLAGS (IF=1, reserved bit 1 = 1)
+            "push {user_cs}",   // CS
+            "push {entry}",     // RIP
+
+            // Jump to user mode
+            "iretq",
+
+            user_cs = in(reg) user_cs,
+            user_ss = in(reg) user_ds,  // SS same as DS for user mode
+            entry = in(reg) entry,
+            stack = in(reg) stack,
+            options(noreturn)
         );
     }
 }

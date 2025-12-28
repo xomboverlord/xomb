@@ -123,6 +123,17 @@ impl Idt {
             0,    // No IST
         );
     }
+
+    /// Set an interrupt handler with custom DPL
+    pub fn set_handler_dpl(&mut self, vector: u8, handler: u64, gate_type: GateType, dpl: u8) {
+        self.entries[vector as usize] = IdtEntry::new(
+            handler,
+            0x08, // Kernel code segment
+            gate_type,
+            dpl,
+            0,    // No IST
+        );
+    }
 }
 
 /// Interrupt stack frame pushed by CPU on interrupt/exception
@@ -271,6 +282,49 @@ unsafe fn load_idt(idt: *const Idt) {
     }
 }
 
+/// Set an interrupt handler (public interface)
+///
+/// # Arguments
+/// * `vector` - Interrupt vector number (0-255)
+/// * `handler` - Handler function address
+/// * `gate_type` - Type of gate (Interrupt or Trap)
+/// * `dpl` - Descriptor Privilege Level (0 = kernel only, 3 = user callable)
+pub fn set_handler(vector: u8, handler: u64, gate_type: GateType, dpl: u8) {
+    let idt = unsafe { &mut *STATIC_IDT.0.get() };
+    idt.set_handler_dpl(vector, handler, gate_type, dpl);
+}
+
+/// Set an interrupt handler with IST (Interrupt Stack Table) support
+///
+/// # Arguments
+/// * `vector` - Interrupt vector number (0-255)
+/// * `handler` - Handler function address
+/// * `gate_type` - Type of gate (Interrupt or Trap)
+/// * `ist` - IST index (1-7), or 0 for no IST
+pub fn set_handler_with_ist(vector: u8, handler: u64, gate_type: GateType, ist: u8) {
+    let idt = unsafe { &mut *STATIC_IDT.0.get() };
+    idt.entries[vector as usize] = IdtEntry::new(
+        handler,
+        0x08, // Kernel code segment
+        gate_type,
+        0,    // DPL 0 (kernel)
+        ist,
+    );
+}
+
+/// Configure the double fault handler to use an IST entry
+///
+/// This must be called after init() and after the IST stack has been
+/// set up in the TSS via gdt::set_ist().
+pub fn set_double_fault_ist(ist: u8) {
+    set_handler_with_ist(
+        vectors::DOUBLE_FAULT,
+        double_fault_handler as *const () as u64,
+        GateType::Trap,
+        ist,
+    );
+}
+
 // ============================================================================
 // Exception Handlers
 // ============================================================================
@@ -404,7 +458,6 @@ extern "C" fn rust_exception_handler(state: &ExceptionState) {
              exception_name(state.vector as u8), state.vector).ok();
     writeln!(serial, "    Error code: {:#x}", state.error_code).ok();
     writeln!(serial, "    RIP: {:#x}  CS: {:#x}", state.rip, state.cs).ok();
-    writeln!(serial, "    RSP: {:#x}  SS: {:#x}", state.rsp, state.ss).ok();
     writeln!(serial, "    RFLAGS: {:#x}", state.rflags).ok();
     writeln!(serial, "    RAX: {:#018x}  RBX: {:#018x}", state.rax, state.rbx).ok();
     writeln!(serial, "    RCX: {:#018x}  RDX: {:#018x}", state.rcx, state.rdx).ok();

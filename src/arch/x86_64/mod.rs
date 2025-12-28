@@ -1,7 +1,9 @@
 //! x86_64 architecture support
 
-pub mod interrupts;
 pub mod gdt;
+pub mod interrupts;
+pub mod pic;
+pub mod syscall;
 
 /// Halt the CPU until the next interrupt
 #[inline]

@@ -444,15 +444,18 @@ pub fn remove_identity_mapping() {
 // ============================================================================
 
 /// Ensure a PML4 entry exists, creating a PDPT if necessary
-fn ensure_pml4_entry(pml4_idx: usize, _flags: u64) -> Result<(), PagingError> {
+fn ensure_pml4_entry(pml4_idx: usize, page_flags: u64) -> Result<(), PagingError> {
     let entry = read_pml4(pml4_idx);
     if !entry.is_present() {
         let frame = allocate_frame()?;
         let phys = frame.start_address();
 
         // Link the new PDPT into the PML4 first
-        // Use only table flags (PRESENT | WRITABLE) for intermediate entries
-        let table_flags = flags::PRESENT | flags::WRITABLE;
+        // For user pages, the USER bit must be set in all intermediate entries
+        let mut table_flags = flags::PRESENT | flags::WRITABLE;
+        if page_flags & flags::USER != 0 {
+            table_flags |= flags::USER;
+        }
         let new_entry = PageTableEntry::new(phys, table_flags);
         write_pml4(pml4_idx, new_entry);
 
@@ -462,13 +465,18 @@ fn ensure_pml4_entry(pml4_idx: usize, _flags: u64) -> Result<(), PagingError> {
         // Zero the new page table via recursive mapping
         // Now that PML4[pml4_idx] is set, pdpt_table_addr gives us access
         zero_page_table(pdpt_table_addr(pml4_idx));
+    } else if page_flags & flags::USER != 0 && !entry.is_user() {
+        // Existing entry needs USER bit added
+        let mut updated = entry;
+        updated.set_flags(entry.flags() | flags::USER);
+        write_pml4(pml4_idx, updated);
     }
     Ok(())
 }
 
 /// Ensure a PDPT entry exists, creating a PD if necessary
-fn ensure_pdpt_entry(pml4_idx: usize, pdpt_idx: usize, flags: u64) -> Result<(), PagingError> {
-    ensure_pml4_entry(pml4_idx, flags)?;
+fn ensure_pdpt_entry(pml4_idx: usize, pdpt_idx: usize, page_flags: u64) -> Result<(), PagingError> {
+    ensure_pml4_entry(pml4_idx, page_flags)?;
 
     let entry = read_pdpt(pml4_idx, pdpt_idx);
     if entry.is_huge() {
@@ -479,8 +487,11 @@ fn ensure_pdpt_entry(pml4_idx: usize, pdpt_idx: usize, flags: u64) -> Result<(),
         let phys = frame.start_address();
 
         // Link the new PD into the PDPT first
-        // Use only table flags for intermediate entries
-        let table_flags = flags::PRESENT | flags::WRITABLE;
+        // For user pages, the USER bit must be set in all intermediate entries
+        let mut table_flags = flags::PRESENT | flags::WRITABLE;
+        if page_flags & flags::USER != 0 {
+            table_flags |= flags::USER;
+        }
         let new_entry = PageTableEntry::new(phys, table_flags);
         write_pdpt(pml4_idx, pdpt_idx, new_entry);
 
@@ -489,13 +500,18 @@ fn ensure_pdpt_entry(pml4_idx: usize, pdpt_idx: usize, flags: u64) -> Result<(),
 
         // Zero the new page table via recursive mapping
         zero_page_table(pd_table_addr(pml4_idx, pdpt_idx));
+    } else if page_flags & flags::USER != 0 && !entry.is_user() {
+        // Existing entry needs USER bit added
+        let mut updated = entry;
+        updated.set_flags(entry.flags() | flags::USER);
+        write_pdpt(pml4_idx, pdpt_idx, updated);
     }
     Ok(())
 }
 
 /// Ensure a PD entry exists, creating a PT if necessary
-fn ensure_pd_entry(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, flags: u64) -> Result<(), PagingError> {
-    ensure_pdpt_entry(pml4_idx, pdpt_idx, flags)?;
+fn ensure_pd_entry(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, page_flags: u64) -> Result<(), PagingError> {
+    ensure_pdpt_entry(pml4_idx, pdpt_idx, page_flags)?;
 
     let entry = read_pd(pml4_idx, pdpt_idx, pd_idx);
     if entry.is_huge() {
@@ -506,8 +522,11 @@ fn ensure_pd_entry(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, flags: u64) 
         let phys = frame.start_address();
 
         // Link the new PT into the PD first
-        // Use only table flags for intermediate entries
-        let table_flags = flags::PRESENT | flags::WRITABLE;
+        // For user pages, the USER bit must be set in all intermediate entries
+        let mut table_flags = flags::PRESENT | flags::WRITABLE;
+        if page_flags & flags::USER != 0 {
+            table_flags |= flags::USER;
+        }
         let new_entry = PageTableEntry::new(phys, table_flags);
         write_pd(pml4_idx, pdpt_idx, pd_idx, new_entry);
 
@@ -516,6 +535,11 @@ fn ensure_pd_entry(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, flags: u64) 
 
         // Zero the new page table via recursive mapping
         zero_page_table(pt_table_addr(pml4_idx, pdpt_idx, pd_idx));
+    } else if page_flags & flags::USER != 0 && !entry.is_user() {
+        // Existing entry needs USER bit added
+        let mut updated = entry;
+        updated.set_flags(entry.flags() | flags::USER);
+        write_pd(pml4_idx, pdpt_idx, pd_idx, updated);
     }
     Ok(())
 }

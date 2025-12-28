@@ -109,8 +109,15 @@ pub fn kernel_init(info: &BootInfo) -> ! {
     // Get serial port for output
     let mut serial = unsafe { SerialPort::new(0x3F8) };
 
+    // CRITICAL: Initialize and remap the PIC first!
+    // The legacy PIC's default IRQ0 (timer) maps to vector 0x08, which conflicts
+    // with the Double Fault exception. This causes spurious "double faults" when
+    // the timer fires. We remap the PIC to vectors 0x20-0x2F and mask all IRQs.
+    arch::x86_64::pic::init();
+
     writeln!(serial, "").ok();
     writeln!(serial, ">>> Entering kernel_init()").ok();
+    writeln!(serial, "    PIC remapped and masked").ok();
     writeln!(serial, "    Boot method: {:?}", info.boot_method).ok();
 
     // Report memory information from boot
@@ -295,11 +302,52 @@ pub fn kernel_init(info: &BootInfo) -> ! {
         }
     }
 
-    // Reload GDT to higher-half address before removing identity mapping
+    // Initialize GDT with TSS for user mode support
+    // We need a kernel stack for ring 0 transitions from ring 3
     writeln!(serial, "").ok();
-    writeln!(serial, ">>> Reloading GDT to higher-half...").ok();
-    arch::x86_64::gdt::reload();
-    writeln!(serial, "    GDT reloaded").ok();
+    writeln!(serial, ">>> Initializing GDT with TSS...").ok();
+
+    // Allocate a kernel stack for syscall/interrupt handling from user mode
+    // We'll use 4 pages (16KB) for the kernel stack
+    let kernel_stack_base = VirtAddr::new(0xFFFFFE8000010000); // In temp region
+
+    // Allocate and map 4 pages for the kernel stack
+    for i in 0..4 {
+        let frame = memory::frame::allocate_frame().expect("Failed to allocate kernel stack");
+        let page_virt = VirtAddr::new(kernel_stack_base.as_u64() + (i * 0x1000) as u64);
+        memory::paging::map_4kb(page_virt, frame.start_address(), memory::paging::flags::KERNEL_DATA)
+            .expect("Failed to map kernel stack");
+    }
+
+    // Stack grows down, so point to top of the 4-page region
+    let kernel_stack_top = kernel_stack_base.as_u64() + 0x4000;
+    arch::x86_64::gdt::init(kernel_stack_top);
+    writeln!(serial, "    GDT with TSS initialized").ok();
+    writeln!(serial, "    Kernel stack at {:#x}", kernel_stack_top).ok();
+
+    // Initialize syscall interface (INT 0x80)
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Initializing syscall interface...").ok();
+    arch::x86_64::syscall::init();
+    writeln!(serial, "    INT 0x80 syscall handler installed").ok();
+
+    // Set up a dedicated stack for double fault handling (IST1)
+    // This ensures the double fault handler has a known-good stack even if
+    // the main stack is corrupted (e.g., during failed privilege transitions)
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Setting up IST for double fault...").ok();
+    let ist1_stack_base = VirtAddr::new(0xFFFFFE8000020000); // Separate from kernel stack
+    // Allocate 4 pages (16KB) - must be enough for exception frame + handler execution
+    for i in 0..4 {
+        let frame = memory::frame::allocate_frame().expect("Failed to allocate IST1 stack");
+        let page_virt = VirtAddr::new(ist1_stack_base.as_u64() + (i * 0x1000) as u64);
+        memory::paging::map_4kb(page_virt, frame.start_address(), memory::paging::flags::KERNEL_DATA)
+            .expect("Failed to map IST1 stack");
+    }
+    let ist1_stack_top = ist1_stack_base.as_u64() + 0x4000; // 16KB stack
+    arch::x86_64::gdt::set_ist(1, ist1_stack_top);
+    arch::x86_64::interrupts::set_double_fault_ist(1);
+    writeln!(serial, "    IST1 (double fault) stack at {:#x}", ist1_stack_top).ok();
 
     // Remove identity mapping - no longer needed now that we're in higher-half
     writeln!(serial, "").ok();
@@ -314,15 +362,162 @@ pub fn kernel_init(info: &BootInfo) -> ! {
         writeln!(serial, "    Identity mapping removed (PML4[0] cleared)").ok();
     }
 
+    // Test user-mode execution
     writeln!(serial, "").ok();
-    writeln!(serial, "Kernel initialization complete.").ok();
-    writeln!(serial, "Halting CPU.").ok();
+    writeln!(serial, ">>> Testing user-mode execution...").ok();
 
-    // Halt the CPU
-    loop {
-        unsafe {
-            core::arch::asm!("cli; hlt", options(nostack, nomem));
+    // Create a new process for user mode test
+    let user_pid = process::create().expect("Failed to create user process");
+    writeln!(serial, "    Created user process {}", user_pid).ok();
+
+    // Get the process's page table for mapping user pages
+    let user_process = process::get(user_pid).unwrap();
+    writeln!(serial, "    Process page table: {:#x}", user_process.page_table).ok();
+
+    // Allocate frames for user code and stack
+    let user_code_frame = memory::frame::allocate_frame().expect("Failed to allocate user code frame");
+    let user_stack_frame = memory::frame::allocate_frame().expect("Failed to allocate user stack frame");
+
+    // User virtual addresses (in low memory, user-accessible)
+    let user_code_virt = VirtAddr::new(0x400000);   // 4MB - typical user code location
+    let user_stack_virt = VirtAddr::new(0x800000);  // 8MB - user stack base
+
+    // First switch to the user process's address space to set up its mappings
+    unsafe { process::switch_address_space(user_pid).expect("Failed to switch to user address space"); }
+
+    // Verify kernel stacks are accessible in user address space
+    // (They should be, since we copy kernel PML4 entries during process creation)
+    writeln!(serial, "    Verifying kernel stack mappings...").ok();
+    if let Some(phys) = memory::paging::translate(VirtAddr::new(kernel_stack_top - 8)) {
+        writeln!(serial, "      Kernel stack: {:#x} -> {:#x}", kernel_stack_top - 8, phys).ok();
+    } else {
+        panic!("Kernel stack not mapped in user address space!");
+    }
+    if let Some(phys) = memory::paging::translate(VirtAddr::new(ist1_stack_top - 8)) {
+        writeln!(serial, "      IST1 stack: {:#x} -> {:#x}", ist1_stack_top - 8, phys).ok();
+    } else {
+        panic!("IST1 stack not mapped in user address space!");
+    }
+
+    // Map user code page (readable, executable, user-accessible)
+    memory::paging::map_4kb(user_code_virt, user_code_frame.start_address(), memory::paging::flags::USER_CODE)
+        .expect("Failed to map user code");
+    writeln!(serial, "    Mapped user code at {:#x}", user_code_virt).ok();
+
+    // Map user stack page (readable, writable, user-accessible)
+    memory::paging::map_4kb(user_stack_virt, user_stack_frame.start_address(), memory::paging::flags::USER_DATA)
+        .expect("Failed to map user stack");
+    writeln!(serial, "    Mapped user stack at {:#x}", user_stack_virt).ok();
+
+    // Write a simple user program that:
+    // 1. Calls write(1, "Hello from user mode!\n", 22)
+    // 2. Calls exit(0)
+    let user_code_ptr = user_code_virt.as_u64() as *mut u8;
+    let message = b"Hello from user mode!\n";
+    let message_offset = 64u64; // Place message after code
+
+    unsafe {
+        let code: &[u8] = &[
+            // mov rax, 1 (WRITE syscall)
+            0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
+            // mov rdi, 1 (fd = stdout)
+            0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
+            // lea rsi, [rip + message_offset] - we'll use absolute address instead
+            // mov rsi, 0x400040 (message address = code_base + 64)
+            0x48, 0xbe,
+            ((user_code_virt.as_u64() + message_offset) & 0xFF) as u8,
+            (((user_code_virt.as_u64() + message_offset) >> 8) & 0xFF) as u8,
+            (((user_code_virt.as_u64() + message_offset) >> 16) & 0xFF) as u8,
+            (((user_code_virt.as_u64() + message_offset) >> 24) & 0xFF) as u8,
+            (((user_code_virt.as_u64() + message_offset) >> 32) & 0xFF) as u8,
+            (((user_code_virt.as_u64() + message_offset) >> 40) & 0xFF) as u8,
+            (((user_code_virt.as_u64() + message_offset) >> 48) & 0xFF) as u8,
+            (((user_code_virt.as_u64() + message_offset) >> 56) & 0xFF) as u8,
+            // mov rdx, 22 (length)
+            0x48, 0xc7, 0xc2, 0x16, 0x00, 0x00, 0x00,
+            // int 0x80
+            0xcd, 0x80,
+            // mov rax, 0 (EXIT syscall)
+            0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00,
+            // mov rdi, 0 (exit code)
+            0x48, 0xc7, 0xc7, 0x00, 0x00, 0x00, 0x00,
+            // int 0x80
+            0xcd, 0x80,
+            // hlt (should never reach here)
+            0xf4,
+        ];
+
+        // Write the code
+        for (i, &byte) in code.iter().enumerate() {
+            core::ptr::write_volatile(user_code_ptr.add(i), byte);
         }
+
+        // Write the message after the code
+        let message_ptr = user_code_ptr.add(message_offset as usize);
+        for (i, &byte) in message.iter().enumerate() {
+            core::ptr::write_volatile(message_ptr.add(i), byte);
+        }
+    }
+    writeln!(serial, "    Wrote user program ({} bytes code + {} bytes data)", 52, message.len()).ok();
+
+    // User stack pointer (top of stack page)
+    let user_stack_top = user_stack_virt.as_u64() + 0x1000;
+
+    // First, let's test that user mode works by running code in kernel
+    // that verifies the segments are correct
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Testing IRETQ mechanism with kernel mode...").ok();
+
+    // Test: Do a simple kernel-to-kernel IRETQ to verify the mechanism
+    unsafe {
+        core::arch::asm!(
+            // Push a simple return frame for kernel mode
+            "push 0x10",        // SS (kernel data)
+            "push rsp",         // RSP (current stack)
+            "add qword ptr [rsp], 8",  // Adjust for the push
+            "pushfq",           // RFLAGS
+            "push 0x08",        // CS (kernel code)
+            "lea rax, [rip + 2f]",  // RIP (label 2)
+            "push rax",
+            "iretq",
+            "2:",
+            out("rax") _,
+            options(nostack)
+        );
+    }
+    writeln!(serial, "    Kernel IRETQ test passed!").ok();
+
+    // Debug: Print the GDT segment descriptor values
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Verifying GDT entries...").ok();
+    let user_cs = arch::x86_64::gdt::user_cs();
+    let user_ds = arch::x86_64::gdt::user_ds();
+    writeln!(serial, "    USER_CS selector: {:#x}", user_cs).ok();
+    writeln!(serial, "    USER_DS selector: {:#x}", user_ds).ok();
+
+    // Test loading user data segment while in kernel mode
+    // This should work: loading DPL=3 segment with RPL=3 while CPL=0
+    writeln!(serial, "    Testing user segment load in kernel mode...").ok();
+    unsafe {
+        core::arch::asm!(
+            "mov ax, {0:x}",
+            "mov ds, ax",      // This might fail with GPF if segment is invalid
+            "mov ax, 0x10",    // Restore kernel data segment
+            "mov ds, ax",
+            in(reg) user_ds as u64,
+            out("rax") _,
+            options(nostack, preserves_flags)
+        );
+    }
+    writeln!(serial, "    User segment load test passed!").ok();
+
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Jumping to user mode (ring 3)...").ok();
+    writeln!(serial, "    Entry: {:#x}, Stack: {:#x}", user_code_virt, user_stack_top).ok();
+
+    // Jump to user mode! (This won't return)
+    unsafe {
+        process::jump_to_user(user_code_virt.as_u64(), user_stack_top);
     }
 }
 
