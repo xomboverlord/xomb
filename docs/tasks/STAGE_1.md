@@ -19,27 +19,33 @@ A process is represented as a page table entry at a level below the kernel's roo
 - A process is a PML4 (or PML3) entry that the kernel maps into its root
 
 **Tasks:**
-- [ ] Define the process data structure (essentially a page table root + metadata)
-- [ ] Implement process creation (allocate page table, initialize entries)
-- [ ] Map the process into the kernel's address space
+- [x] Define the process data structure (essentially a page table root + metadata)
+- [x] Implement process creation (allocate page table, initialize entries)
+- [x] Map the process into the kernel's address space
+
+**Status:** Complete. See `src/process/mod.rs`. Processes have their own PML4 with kernel mappings copied from the kernel's page table. Process creation allocates a new PML4 frame and initializes it with kernel-space entries.
 
 ### 2. Allocate a Resource
 
 Resources are memory-mapped regions represented as page table structures that can be attached to processes.
 
 **Tasks:**
-- [ ] Define resource types (physical memory regions, device MMIO, etc.)
-- [ ] Implement resource allocation (create page table entries representing the resource)
+- [x] Define resource types (physical memory regions, device MMIO, etc.)
+- [x] Implement resource allocation (create page table entries representing the resource)
 - [ ] Track allocated resources (ownership, reference counting?)
+
+**Status:** Partially complete. Physical frame allocation is implemented in `src/memory/frame.rs`. Frames can be allocated from free memory and mapped into address spaces. Resource tracking/ownership is not yet implemented - frames are allocated but not tracked per-process.
 
 ### 3. Attach a Resource to a Virtual Address Space
 
 Link a resource's page table entry into a process's page table at a specified virtual address.
 
 **Tasks:**
-- [ ] Implement resource attachment (map resource page table into process page table)
+- [x] Implement resource attachment (map resource page table into process page table)
 - [ ] Handle alignment requirements (superpages: 2MB, 1GB)
-- [ ] Set appropriate access flags (read, write, execute, user/supervisor)
+- [x] Set appropriate access flags (read, write, execute, user/supervisor)
+
+**Status:** Mostly complete. `src/memory/paging.rs` provides `map_4kb()` for mapping physical frames into virtual address spaces. User-accessible flags (USER_CODE, USER_DATA) are supported. Superpage mapping (2MB, 1GB) is not yet implemented.
 
 ### 4. Update Resource Access
 
@@ -47,8 +53,10 @@ Modify the access permissions of an already-attached resource.
 
 **Tasks:**
 - [ ] Implement permission updates (modify page table entry flags)
-- [ ] Handle TLB invalidation (invlpg, or full flush)
+- [x] Handle TLB invalidation (invlpg, or full flush)
 - [ ] Consider cache coherency implications
+
+**Status:** Partially complete. TLB is flushed via CR3 reload when switching address spaces. A dedicated permission update function is not yet implemented - currently requires unmapping and remapping.
 
 ### 5. Atomically Swap Resource Access
 
@@ -59,35 +67,45 @@ Transfer a resource from one process to another atomically.
 - [ ] Handle TLB/cache synchronization
 - [ ] Note: In single-process Stage 1, this may be simplified
 
+**Status:** Not started. This is lower priority for Stage 1 as we currently have only single-process execution.
+
 ## Infrastructure Required
 
 ### Physical Memory Management
 
 **Tasks:**
-- [ ] Parse memory map from bootloader (multiboot2/UEFI)
-- [ ] Implement physical frame allocator
-- [ ] Track free/used physical pages
+- [x] Parse memory map from bootloader (multiboot2/UEFI)
+- [x] Implement physical frame allocator
+- [x] Track free/used physical pages
+
+**Status:** Complete. See `src/memory/frame.rs`. The frame allocator parses the multiboot2 memory map, marks kernel and reserved regions as used, and provides `allocate_frame()` and `deallocate_frame()` functions.
 
 ### Page Table Management
 
 **Tasks:**
-- [ ] Implement page table creation and manipulation
+- [x] Implement page table creation and manipulation
 - [ ] Support for 4KB, 2MB, and 1GB pages (superpages)
 - [x] Kernel mapping strategy: higher-half at 0xFFFFFFFF80000000 with recursive mapping at PML4[510]
+
+**Status:** Mostly complete. See `src/memory/paging.rs`. Recursive mapping enables reading/writing page table entries at all levels. 4KB page mapping (`map_4kb`, `unmap_4kb`) and address translation are implemented. Superpage support is not yet implemented.
 
 ### System Call Interface
 
 **Tasks:**
-- [ ] Define syscall mechanism (syscall/sysret instruction)
-- [ ] Implement syscall handler
+- [x] Define syscall mechanism (syscall/sysret instruction)
+- [x] Implement syscall handler
 - [ ] Define initial syscall ABI for the five core actions
+
+**Status:** Mostly complete. See `src/arch/x86_64/syscall.rs`. Native SYSCALL/SYSRET is implemented with SWAPGS for kernel stack access. Current syscalls: `write(fd, buf, len)` and `exit(code)`. Resource management syscalls (mmap, etc.) not yet implemented.
 
 ### Initial Process Loading
 
 **Tasks:**
 - [ ] Define executable format (ELF?)
-- [ ] Load initial process from boot module or embedded binary
-- [ ] Transfer control to user mode
+- [x] Load initial process from boot module or embedded binary
+- [x] Transfer control to user mode
+
+**Status:** Partially complete. User mode execution works via `jump_to_user()` in `src/process/mod.rs`. Currently loads inline machine code rather than ELF binaries. GDT with TSS, user segments, and IST for double fault are configured.
 
 ## Design Decisions
 
@@ -149,32 +167,52 @@ The following questions need to be answered before or during implementation:
 
 The boot assembly (`src/boot/multiboot2_header.asm`) and linker script (`linker-multiboot2.ld`) have been updated:
 
-1. **[DONE] Identity map first 1GB** - PML4[0] → PDPT_LOW → PD (512 x 2MB pages)
-2. **[DONE] Map kernel at higher-half** - PML4[511] → PDPT_HIGH → PD at 0xFFFFFFFF80000000
-3. **[DONE] Set up recursive mapping** - PML4[510] = physical address of PML4 | flags
-4. **[DONE] Jump to higher-half** - Boot code transitions to higher-half stack and calls Rust entry point
-5. **[TODO] Unmap identity mapping** - Remove PML4[0] once running in higher-half (can be done in Rust)
+1. **[DONE]** Identity map first 1GB - PML4[0] → PDPT_LOW → PD (512 x 2MB pages)
+2. **[DONE]** Map kernel at higher-half - PML4[511] → PDPT_HIGH → PD at 0xFFFFFFFF80000000
+3. **[DONE]** Set up recursive mapping - PML4[510] = physical address of PML4 | flags
+4. **[DONE]** Jump to higher-half - Boot code transitions to higher-half stack and calls Rust entry point
+5. **[DONE]** Unmap identity mapping - `remove_identity_mapping()` in `src/memory/paging.rs` clears PML4[0]
+
+**Additional boot infrastructure completed:**
+- **[DONE]** PIC remapped to vectors 0x20-0x2F and masked (prevents timer IRQ conflicts with exceptions)
+- **[DONE]** IDT with exception handlers installed
+- **[DONE]** GDT with TSS for ring 0/3 transitions
+- **[DONE]** IST configured for double fault handler
 
 ## Suggested Implementation Order
 
 1. ~~Update boot code for higher-half + recursive mapping~~ **[DONE]**
 2. ~~Update linker script for higher-half kernel~~ **[DONE]**
-3. Physical memory allocator (using boot memory map)
-4. Page table manipulation primitives (using recursive mapping)
-5. Process creation (allocate PML4, map into kernel space)
-6. Resource allocation (physical memory regions as page table structures)
-7. Resource attachment (map into process address space)
-8. Permission updates and TLB management
-9. System call interface
-10. Initial process loading and user-mode transition
-11. Atomic resource swapping
+3. ~~Physical memory allocator (using boot memory map)~~ **[DONE]**
+4. ~~Page table manipulation primitives (using recursive mapping)~~ **[DONE]**
+5. ~~Process creation (allocate PML4, map into kernel space)~~ **[DONE]**
+6. ~~Resource allocation (physical memory regions as page table structures)~~ **[DONE]** (basic frame allocation)
+7. ~~Resource attachment (map into process address space)~~ **[DONE]**
+8. Permission updates and TLB management - **[PARTIAL]** (TLB flush done, permission API pending)
+9. ~~System call interface~~ **[DONE]** (SYSCALL/SYSRET with write/exit)
+10. ~~Initial process loading and user-mode transition~~ **[DONE]** (inline code, ELF pending)
+11. Atomic resource swapping - **[NOT STARTED]**
 
 ## Success Criteria
 
 Stage 1 is complete when:
 
-- A single process can be created with its own virtual address space
-- Physical memory resources can be allocated and mapped into the process
-- Access permissions can be set and modified
-- The process can execute code in user mode
-- Basic syscalls allow the process to request resources from the kernel
+- [x] A single process can be created with its own virtual address space
+- [x] Physical memory resources can be allocated and mapped into the process
+- [ ] Access permissions can be set and modified (set works, modify API pending)
+- [x] The process can execute code in user mode
+- [ ] Basic syscalls allow the process to request resources from the kernel (write/exit done, mmap pending)
+
+### Current Status Summary
+
+**Stage 1 is approximately 80% complete.** The core execution path works:
+- Process creation with isolated address space ✓
+- Physical memory allocation and mapping ✓
+- User mode execution (ring 3) ✓
+- Fast SYSCALL/SYSRET interface ✓
+
+**Remaining work:**
+- Resource management syscalls (mmap/munmap)
+- Permission update API
+- ELF loader (currently using inline machine code)
+- Per-process resource tracking
