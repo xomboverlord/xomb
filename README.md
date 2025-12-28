@@ -67,6 +67,14 @@ And some interesting developer diaries exist for the different stages of develop
 
 TBD
 
+## Acknowledgements
+
+The following people made significant code contributions to the first XOmB and suitably encouraged this new incarnation:
+
+* Lindsey Bieda
+* Steve Klabnik
+* Andrew Tribone
+
 ## AI Development
 
 This project was developed with assistance from the Claude AI agent as primarily an experiment to see how well an AI in late 2025 could handle the task of writing an exokernel while heavily supervised. It was very bad at it, but nonetheless managed to eventually miss enough rakes to produce something coherent after a lot of hand holding. It kept assuming in its drunken daydreams that problems were due to compiler or emulator bugs instead of its own incompetence. I can relate. Yet, when it was told to consider the (what feels like obvious) actual problem, it could course-correct adequately enough. Some of the structure it chose was eerily familiar... like... did it steal this from the original XOmB? Am I plagiarizing† myself? This all to say: some of this code is its hallucinations.
