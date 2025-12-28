@@ -31,8 +31,8 @@ RELEASE_ELF := $(BUILD_DIR_MB2)/release/xomb-multiboot2
 # Fedora: /usr/share/edk2/ovmf/
 # Arch: /usr/share/ovmf/x64/
 OVMF_DIR ?= /usr/share/OVMF
-OVMF_CODE ?= $(OVMF_DIR)/OVMF_CODE.fd
-OVMF_VARS ?= $(OVMF_DIR)/OVMF_VARS.fd
+OVMF_CODE ?= $(OVMF_DIR)/OVMF_CODE_4M.fd
+OVMF_VARS ?= $(OVMF_DIR)/OVMF_VARS_4M.fd
 
 # ESP (EFI System Partition) image
 ESP_DIR := esp
@@ -58,7 +58,7 @@ QEMU_MB2 := \
 	-no-reboot
 
 # Bochs settings
-BOCHS := /home/wilkie/Bochs/usr/bin/bochs
+BOCHS := /home/$(USER)/Bochs/usr/bin/bochs
 BOCHSRC := bochsrc.txt
 
 # Build-std flags
