@@ -388,17 +388,25 @@ pub unsafe fn jump_to_user(entry: u64, stack: u64) -> ! {
     //
     // Note: DS/ES/FS/GS must be set to valid user selectors before IRETQ
     // when transitioning to ring 3. Using null (0) is valid in 64-bit mode.
+    //
+    // IMPORTANT: We must SWAPGS before going to user mode so that:
+    // - User mode has GS_BASE = user's TLS (0 for now)
+    // - KERNEL_GS_BASE = per-CPU data pointer
+    // This way, when SYSCALL happens, SWAPGS in the entry point will
+    // give the kernel access to per-CPU data.
     unsafe {
         core::arch::asm!(
-            // Set DS/ES/FS/GS to null using r11 - avoid clobbering input registers
+            // Set DS/ES to null using r11 - avoid clobbering input registers
             "xor r11d, r11d",
             "mov ds, r11w",
             "mov es, r11w",
-            "mov fs, r11w",
-            "mov gs, r11w",
 
             // Memory barrier to ensure all stores are complete
             "mfence",
+
+            // SWAPGS: swap kernel GS with user GS before entering user mode
+            // After this: GS_BASE = user's GS (0), KERNEL_GS_BASE = per-CPU data
+            "swapgs",
 
             // Build IRETQ frame on stack
             "push {user_ss}",   // SS

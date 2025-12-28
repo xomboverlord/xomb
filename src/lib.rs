@@ -325,11 +325,11 @@ pub fn kernel_init(info: &BootInfo) -> ! {
     writeln!(serial, "    GDT with TSS initialized").ok();
     writeln!(serial, "    Kernel stack at {:#x}", kernel_stack_top).ok();
 
-    // Initialize syscall interface (INT 0x80)
+    // Initialize SYSCALL/SYSRET interface
     writeln!(serial, "").ok();
-    writeln!(serial, ">>> Initializing syscall interface...").ok();
-    arch::x86_64::syscall::init();
-    writeln!(serial, "    INT 0x80 syscall handler installed").ok();
+    writeln!(serial, ">>> Initializing SYSCALL/SYSRET...").ok();
+    arch::x86_64::syscall::init(kernel_stack_top);
+    writeln!(serial, "    SYSCALL/SYSRET configured").ok();
 
     // Set up a dedicated stack for double fault handling (IST1)
     // This ensures the double fault handler has a known-good stack even if
@@ -412,6 +412,7 @@ pub fn kernel_init(info: &BootInfo) -> ! {
     // Write a simple user program that:
     // 1. Calls write(1, "Hello from user mode!\n", 22)
     // 2. Calls exit(0)
+    // Uses native SYSCALL instruction (0x0f 0x05) instead of int 0x80
     let user_code_ptr = user_code_virt.as_u64() as *mut u8;
     let message = b"Hello from user mode!\n";
     let message_offset = 64u64; // Place message after code
@@ -422,8 +423,7 @@ pub fn kernel_init(info: &BootInfo) -> ! {
             0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
             // mov rdi, 1 (fd = stdout)
             0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
-            // lea rsi, [rip + message_offset] - we'll use absolute address instead
-            // mov rsi, 0x400040 (message address = code_base + 64)
+            // mov rsi, message_address (code_base + 64)
             0x48, 0xbe,
             ((user_code_virt.as_u64() + message_offset) & 0xFF) as u8,
             (((user_code_virt.as_u64() + message_offset) >> 8) & 0xFF) as u8,
@@ -435,14 +435,14 @@ pub fn kernel_init(info: &BootInfo) -> ! {
             (((user_code_virt.as_u64() + message_offset) >> 56) & 0xFF) as u8,
             // mov rdx, 22 (length)
             0x48, 0xc7, 0xc2, 0x16, 0x00, 0x00, 0x00,
-            // int 0x80
-            0xcd, 0x80,
+            // syscall
+            0x0f, 0x05,
             // mov rax, 0 (EXIT syscall)
             0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00,
             // mov rdi, 0 (exit code)
             0x48, 0xc7, 0xc7, 0x00, 0x00, 0x00, 0x00,
-            // int 0x80
-            0xcd, 0x80,
+            // syscall
+            0x0f, 0x05,
             // hlt (should never reach here)
             0xf4,
         ];
