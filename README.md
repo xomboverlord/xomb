@@ -67,13 +67,15 @@ And some interesting developer diaries exist for the different stages of develop
 
 TBD
 
-## Acknowledgements
+## Acknowledgments
 
 The following people made significant code contributions to the first XOmB and suitably encouraged this new incarnation:
 
 * Lindsey Bieda
 * Steve Klabnik
 * Andrew Tribone
+
+We are in the debt of Dr. Ahmed Amer-- systems professor, expert 'it depends' advocate, and steadfast voice of reason-- for being a great mentor to all of us through our systems journey.
 
 ## AI Development
 
