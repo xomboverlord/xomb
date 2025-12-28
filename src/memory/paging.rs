@@ -12,12 +12,21 @@
 //!
 //! ## Page Table Hierarchy (4-level paging)
 //!
+//! We use simplified level-based naming (PML4/PML3/PML2/PML1) rather than
+//! the x86 architectural names for clarity:
+//!
 //! ```text
-//! PML4 (Page Map Level 4)     - 512 entries, each covers 512 GB
-//!   └─► PDPT (Page Dir Ptr)   - 512 entries, each covers 1 GB
-//!         └─► PD (Page Dir)   - 512 entries, each covers 2 MB
-//!               └─► PT (Page Table) - 512 entries, each covers 4 KB
+//! PML4 (Page Map Level 4)  - 512 entries, each covers 512 GB  [x86: PML4]
+//!   └─► PML3               - 512 entries, each covers 1 GB    [x86: PDPT]
+//!         └─► PML2         - 512 entries, each covers 2 MB    [x86: PD]
+//!               └─► PML1   - 512 entries, each covers 4 KB    [x86: PT]
 //! ```
+//!
+//! Correspondence to x86 terminology:
+//! - PML4 = Page Map Level 4 (same)
+//! - PML3 = Page Directory Pointer Table (PDPT)
+//! - PML2 = Page Directory (PD)
+//! - PML1 = Page Table (PT)
 
 use core::fmt;
 use crate::memory::frame::{Frame, PhysAddr, allocate_frame, FrameAllocatorError};
@@ -47,7 +56,7 @@ pub mod flags {
     pub const ACCESSED: u64 = 1 << 5;
     /// Page has been written to (set by CPU)
     pub const DIRTY: u64 = 1 << 6;
-    /// Huge page (2MB in PD, 1GB in PDPT)
+    /// Huge page (2MB in PML2, 1GB in PML3)
     pub const HUGE_PAGE: u64 = 1 << 7;
     /// Global page (not flushed on CR3 change)
     pub const GLOBAL: u64 = 1 << 8;
@@ -183,21 +192,21 @@ impl VirtAddr {
         ((self.0 >> 39) & 0x1FF) as usize
     }
 
-    /// Get the PDPT index (bits 30-38)
+    /// Get the PML3 index (bits 30-38)
     #[inline]
-    pub const fn pdpt_index(self) -> usize {
+    pub const fn pml3_index(self) -> usize {
         ((self.0 >> 30) & 0x1FF) as usize
     }
 
-    /// Get the PD index (bits 21-29)
+    /// Get the PML2 index (bits 21-29)
     #[inline]
-    pub const fn pd_index(self) -> usize {
+    pub const fn pml2_index(self) -> usize {
         ((self.0 >> 21) & 0x1FF) as usize
     }
 
-    /// Get the PT index (bits 12-20)
+    /// Get the PML1 index (bits 12-20)
     #[inline]
-    pub const fn pt_index(self) -> usize {
+    pub const fn pml1_index(self) -> usize {
         ((self.0 >> 12) & 0x1FF) as usize
     }
 
@@ -230,11 +239,11 @@ impl fmt::LowerHex for VirtAddr {
 /// Page size variants
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageSize {
-    /// 4 KB page (standard)
+    /// 4 KB page (standard, via PML1 entry)
     Small,
-    /// 2 MB page (huge page via PD entry)
+    /// 2 MB page (huge page via PML2 entry)
     Large,
-    /// 1 GB page (huge page via PDPT entry)
+    /// 1 GB page (huge page via PML3 entry)
     Huge,
 }
 
@@ -283,69 +292,69 @@ pub fn pml4_entry_addr(pml4_idx: usize) -> *mut PageTableEntry {
     (PML4_BASE + (pml4_idx as u64) * 8) as *mut PageTableEntry
 }
 
-/// Calculate the virtual address to access a PDPT entry via recursive mapping
+/// Calculate the virtual address to access a PML3 entry via recursive mapping
 ///
-/// Formula: 0xFFFFFF7FBFC00000 + (pml4_idx * 0x1000) + (pdpt_idx * 8)
+/// Formula: 0xFFFFFF7FBFC00000 + (pml4_idx * 0x1000) + (pml3_idx * 8)
 #[inline]
-pub fn pdpt_entry_addr(pml4_idx: usize, pdpt_idx: usize) -> *mut PageTableEntry {
-    const PDPT_BASE: u64 = 0xFFFF_FF7F_BFC0_0000;
-    (PDPT_BASE + (pml4_idx as u64) * 0x1000 + (pdpt_idx as u64) * 8) as *mut PageTableEntry
+pub fn pml3_entry_addr(pml4_idx: usize, pml3_idx: usize) -> *mut PageTableEntry {
+    const PML3_BASE: u64 = 0xFFFF_FF7F_BFC0_0000;
+    (PML3_BASE + (pml4_idx as u64) * 0x1000 + (pml3_idx as u64) * 8) as *mut PageTableEntry
 }
 
-/// Calculate the virtual address to access a PD entry via recursive mapping
+/// Calculate the virtual address to access a PML2 entry via recursive mapping
 ///
-/// Formula: 0xFFFFFF7F80000000 + (pml4_idx * 0x200000) + (pdpt_idx * 0x1000) + (pd_idx * 8)
+/// Formula: 0xFFFFFF7F80000000 + (pml4_idx * 0x200000) + (pml3_idx * 0x1000) + (pml2_idx * 8)
 #[inline]
-pub fn pd_entry_addr(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize) -> *mut PageTableEntry {
-    const PD_BASE: u64 = 0xFFFF_FF7F_8000_0000;
-    (PD_BASE
+pub fn pml2_entry_addr(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize) -> *mut PageTableEntry {
+    const PML2_BASE: u64 = 0xFFFF_FF7F_8000_0000;
+    (PML2_BASE
         + (pml4_idx as u64) * 0x20_0000
-        + (pdpt_idx as u64) * 0x1000
-        + (pd_idx as u64) * 8) as *mut PageTableEntry
+        + (pml3_idx as u64) * 0x1000
+        + (pml2_idx as u64) * 8) as *mut PageTableEntry
 }
 
-/// Calculate the virtual address to access a PT entry via recursive mapping
+/// Calculate the virtual address to access a PML1 entry via recursive mapping
 ///
-/// Formula: 0xFFFFFF0000000000 + (pml4_idx * 0x40000000) + (pdpt_idx * 0x200000)
-///          + (pd_idx * 0x1000) + (pt_idx * 8)
+/// Formula: 0xFFFFFF0000000000 + (pml4_idx * 0x40000000) + (pml3_idx * 0x200000)
+///          + (pml2_idx * 0x1000) + (pml1_idx * 8)
 #[inline]
-pub fn pt_entry_addr(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, pt_idx: usize) -> *mut PageTableEntry {
-    const PT_BASE: u64 = 0xFFFF_FF00_0000_0000;
-    (PT_BASE
+pub fn pml1_entry_addr(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize, pml1_idx: usize) -> *mut PageTableEntry {
+    const PML1_BASE: u64 = 0xFFFF_FF00_0000_0000;
+    (PML1_BASE
         + (pml4_idx as u64) * 0x4000_0000
-        + (pdpt_idx as u64) * 0x20_0000
-        + (pd_idx as u64) * 0x1000
-        + (pt_idx as u64) * 8) as *mut PageTableEntry
+        + (pml3_idx as u64) * 0x20_0000
+        + (pml2_idx as u64) * 0x1000
+        + (pml1_idx as u64) * 8) as *mut PageTableEntry
 }
 
-/// Calculate the virtual address of a PDPT page via recursive mapping
+/// Calculate the virtual address of a PML3 table via recursive mapping
 ///
-/// After PML4[pml4_idx] is set, this address accesses the entire PDPT page.
+/// After PML4[pml4_idx] is set, this address accesses the entire PML3 table.
 #[inline]
-fn pdpt_table_addr(pml4_idx: usize) -> *mut u64 {
-    const PDPT_BASE: u64 = 0xFFFF_FF7F_BFC0_0000;
-    (PDPT_BASE + (pml4_idx as u64) * 0x1000) as *mut u64
+fn pml3_table_addr(pml4_idx: usize) -> *mut u64 {
+    const PML3_BASE: u64 = 0xFFFF_FF7F_BFC0_0000;
+    (PML3_BASE + (pml4_idx as u64) * 0x1000) as *mut u64
 }
 
-/// Calculate the virtual address of a PD page via recursive mapping
+/// Calculate the virtual address of a PML2 table via recursive mapping
 ///
-/// After PDPT[pml4_idx][pdpt_idx] is set, this address accesses the entire PD page.
+/// After PML3[pml4_idx][pml3_idx] is set, this address accesses the entire PML2 table.
 #[inline]
-fn pd_table_addr(pml4_idx: usize, pdpt_idx: usize) -> *mut u64 {
-    const PD_BASE: u64 = 0xFFFF_FF7F_8000_0000;
-    (PD_BASE + (pml4_idx as u64) * 0x20_0000 + (pdpt_idx as u64) * 0x1000) as *mut u64
+fn pml2_table_addr(pml4_idx: usize, pml3_idx: usize) -> *mut u64 {
+    const PML2_BASE: u64 = 0xFFFF_FF7F_8000_0000;
+    (PML2_BASE + (pml4_idx as u64) * 0x20_0000 + (pml3_idx as u64) * 0x1000) as *mut u64
 }
 
-/// Calculate the virtual address of a PT page via recursive mapping
+/// Calculate the virtual address of a PML1 table via recursive mapping
 ///
-/// After PD[pml4_idx][pdpt_idx][pd_idx] is set, this address accesses the entire PT page.
+/// After PML2[pml4_idx][pml3_idx][pml2_idx] is set, this address accesses the entire PML1 table.
 #[inline]
-fn pt_table_addr(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize) -> *mut u64 {
-    const PT_BASE: u64 = 0xFFFF_FF00_0000_0000;
-    (PT_BASE
+fn pml1_table_addr(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize) -> *mut u64 {
+    const PML1_BASE: u64 = 0xFFFF_FF00_0000_0000;
+    (PML1_BASE
         + (pml4_idx as u64) * 0x4000_0000
-        + (pdpt_idx as u64) * 0x20_0000
-        + (pd_idx as u64) * 0x1000) as *mut u64
+        + (pml3_idx as u64) * 0x20_0000
+        + (pml2_idx as u64) * 0x1000) as *mut u64
 }
 
 // ============================================================================
@@ -367,40 +376,40 @@ pub fn write_pml4(pml4_idx: usize, entry: PageTableEntry) {
     }
 }
 
-/// Read a PDPT entry (requires PML4 entry to be present)
+/// Read a PML3 entry (requires PML4 entry to be present)
 #[inline]
-pub fn read_pdpt(pml4_idx: usize, pdpt_idx: usize) -> PageTableEntry {
-    unsafe { *pdpt_entry_addr(pml4_idx, pdpt_idx) }
+pub fn read_pml3(pml4_idx: usize, pml3_idx: usize) -> PageTableEntry {
+    unsafe { *pml3_entry_addr(pml4_idx, pml3_idx) }
 }
 
-/// Write a PDPT entry
+/// Write a PML3 entry
 #[inline]
-pub fn write_pdpt(pml4_idx: usize, pdpt_idx: usize, entry: PageTableEntry) {
-    unsafe { *pdpt_entry_addr(pml4_idx, pdpt_idx) = entry; }
+pub fn write_pml3(pml4_idx: usize, pml3_idx: usize, entry: PageTableEntry) {
+    unsafe { *pml3_entry_addr(pml4_idx, pml3_idx) = entry; }
 }
 
-/// Read a PD entry (requires PML4 and PDPT entries to be present)
+/// Read a PML2 entry (requires PML4 and PML3 entries to be present)
 #[inline]
-pub fn read_pd(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize) -> PageTableEntry {
-    unsafe { *pd_entry_addr(pml4_idx, pdpt_idx, pd_idx) }
+pub fn read_pml2(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize) -> PageTableEntry {
+    unsafe { *pml2_entry_addr(pml4_idx, pml3_idx, pml2_idx) }
 }
 
-/// Write a PD entry
+/// Write a PML2 entry
 #[inline]
-pub fn write_pd(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, entry: PageTableEntry) {
-    unsafe { *pd_entry_addr(pml4_idx, pdpt_idx, pd_idx) = entry; }
+pub fn write_pml2(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize, entry: PageTableEntry) {
+    unsafe { *pml2_entry_addr(pml4_idx, pml3_idx, pml2_idx) = entry; }
 }
 
-/// Read a PT entry (requires PML4, PDPT, and PD entries to be present)
+/// Read a PML1 entry (requires PML4, PML3, and PML2 entries to be present)
 #[inline]
-pub fn read_pt(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, pt_idx: usize) -> PageTableEntry {
-    unsafe { *pt_entry_addr(pml4_idx, pdpt_idx, pd_idx, pt_idx) }
+pub fn read_pml1(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize, pml1_idx: usize) -> PageTableEntry {
+    unsafe { *pml1_entry_addr(pml4_idx, pml3_idx, pml2_idx, pml1_idx) }
 }
 
-/// Write a PT entry
+/// Write a PML1 entry
 #[inline]
-pub fn write_pt(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, pt_idx: usize, entry: PageTableEntry) {
-    unsafe { *pt_entry_addr(pml4_idx, pdpt_idx, pd_idx, pt_idx) = entry; }
+pub fn write_pml1(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize, pml1_idx: usize, entry: PageTableEntry) {
+    unsafe { *pml1_entry_addr(pml4_idx, pml3_idx, pml2_idx, pml1_idx) = entry; }
 }
 
 // ============================================================================
@@ -443,14 +452,14 @@ pub fn remove_identity_mapping() {
 // Page Table Creation and Mapping
 // ============================================================================
 
-/// Ensure a PML4 entry exists, creating a PDPT if necessary
+/// Ensure a PML4 entry exists, creating a PML3 table if necessary
 fn ensure_pml4_entry(pml4_idx: usize, page_flags: u64) -> Result<(), PagingError> {
     let entry = read_pml4(pml4_idx);
     if !entry.is_present() {
         let frame = allocate_frame()?;
         let phys = frame.start_address();
 
-        // Link the new PDPT into the PML4 first
+        // Link the new PML3 into the PML4 first
         // For user pages, the USER bit must be set in all intermediate entries
         let mut table_flags = flags::PRESENT | flags::WRITABLE;
         if page_flags & flags::USER != 0 {
@@ -459,12 +468,12 @@ fn ensure_pml4_entry(pml4_idx: usize, page_flags: u64) -> Result<(), PagingError
         let new_entry = PageTableEntry::new(phys, table_flags);
         write_pml4(pml4_idx, new_entry);
 
-        // Flush TLB so we can access the new PDPT via recursive mapping
+        // Flush TLB so we can access the new PML3 via recursive mapping
         flush_tlb();
 
         // Zero the new page table via recursive mapping
-        // Now that PML4[pml4_idx] is set, pdpt_table_addr gives us access
-        zero_page_table(pdpt_table_addr(pml4_idx));
+        // Now that PML4[pml4_idx] is set, pml3_table_addr gives us access
+        zero_page_table(pml3_table_addr(pml4_idx));
     } else if page_flags & flags::USER != 0 && !entry.is_user() {
         // Existing entry needs USER bit added
         let mut updated = entry;
@@ -474,11 +483,11 @@ fn ensure_pml4_entry(pml4_idx: usize, page_flags: u64) -> Result<(), PagingError
     Ok(())
 }
 
-/// Ensure a PDPT entry exists, creating a PD if necessary
-fn ensure_pdpt_entry(pml4_idx: usize, pdpt_idx: usize, page_flags: u64) -> Result<(), PagingError> {
+/// Ensure a PML3 entry exists, creating a PML2 table if necessary
+fn ensure_pml3_entry(pml4_idx: usize, pml3_idx: usize, page_flags: u64) -> Result<(), PagingError> {
     ensure_pml4_entry(pml4_idx, page_flags)?;
 
-    let entry = read_pdpt(pml4_idx, pdpt_idx);
+    let entry = read_pml3(pml4_idx, pml3_idx);
     if entry.is_huge() {
         return Err(PagingError::HugePageConflict);
     }
@@ -486,34 +495,34 @@ fn ensure_pdpt_entry(pml4_idx: usize, pdpt_idx: usize, page_flags: u64) -> Resul
         let frame = allocate_frame()?;
         let phys = frame.start_address();
 
-        // Link the new PD into the PDPT first
+        // Link the new PML2 into the PML3 first
         // For user pages, the USER bit must be set in all intermediate entries
         let mut table_flags = flags::PRESENT | flags::WRITABLE;
         if page_flags & flags::USER != 0 {
             table_flags |= flags::USER;
         }
         let new_entry = PageTableEntry::new(phys, table_flags);
-        write_pdpt(pml4_idx, pdpt_idx, new_entry);
+        write_pml3(pml4_idx, pml3_idx, new_entry);
 
-        // Flush TLB so we can access the new PD via recursive mapping
+        // Flush TLB so we can access the new PML2 via recursive mapping
         flush_tlb();
 
         // Zero the new page table via recursive mapping
-        zero_page_table(pd_table_addr(pml4_idx, pdpt_idx));
+        zero_page_table(pml2_table_addr(pml4_idx, pml3_idx));
     } else if page_flags & flags::USER != 0 && !entry.is_user() {
         // Existing entry needs USER bit added
         let mut updated = entry;
         updated.set_flags(entry.flags() | flags::USER);
-        write_pdpt(pml4_idx, pdpt_idx, updated);
+        write_pml3(pml4_idx, pml3_idx, updated);
     }
     Ok(())
 }
 
-/// Ensure a PD entry exists, creating a PT if necessary
-fn ensure_pd_entry(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, page_flags: u64) -> Result<(), PagingError> {
-    ensure_pdpt_entry(pml4_idx, pdpt_idx, page_flags)?;
+/// Ensure a PML2 entry exists, creating a PML1 table if necessary
+fn ensure_pml2_entry(pml4_idx: usize, pml3_idx: usize, pml2_idx: usize, page_flags: u64) -> Result<(), PagingError> {
+    ensure_pml3_entry(pml4_idx, pml3_idx, page_flags)?;
 
-    let entry = read_pd(pml4_idx, pdpt_idx, pd_idx);
+    let entry = read_pml2(pml4_idx, pml3_idx, pml2_idx);
     if entry.is_huge() {
         return Err(PagingError::HugePageConflict);
     }
@@ -521,25 +530,25 @@ fn ensure_pd_entry(pml4_idx: usize, pdpt_idx: usize, pd_idx: usize, page_flags: 
         let frame = allocate_frame()?;
         let phys = frame.start_address();
 
-        // Link the new PT into the PD first
+        // Link the new PML1 into the PML2 first
         // For user pages, the USER bit must be set in all intermediate entries
         let mut table_flags = flags::PRESENT | flags::WRITABLE;
         if page_flags & flags::USER != 0 {
             table_flags |= flags::USER;
         }
         let new_entry = PageTableEntry::new(phys, table_flags);
-        write_pd(pml4_idx, pdpt_idx, pd_idx, new_entry);
+        write_pml2(pml4_idx, pml3_idx, pml2_idx, new_entry);
 
-        // Flush TLB so we can access the new PT via recursive mapping
+        // Flush TLB so we can access the new PML1 via recursive mapping
         flush_tlb();
 
         // Zero the new page table via recursive mapping
-        zero_page_table(pt_table_addr(pml4_idx, pdpt_idx, pd_idx));
+        zero_page_table(pml1_table_addr(pml4_idx, pml3_idx, pml2_idx));
     } else if page_flags & flags::USER != 0 && !entry.is_user() {
         // Existing entry needs USER bit added
         let mut updated = entry;
         updated.set_flags(entry.flags() | flags::USER);
-        write_pd(pml4_idx, pdpt_idx, pd_idx, updated);
+        write_pml2(pml4_idx, pml3_idx, pml2_idx, updated);
     }
     Ok(())
 }
@@ -563,22 +572,22 @@ pub fn map_4kb(virt: VirtAddr, phys: PhysAddr, flags: u64) -> Result<(), PagingE
     }
 
     let pml4_idx = virt.pml4_index();
-    let pdpt_idx = virt.pdpt_index();
-    let pd_idx = virt.pd_index();
-    let pt_idx = virt.pt_index();
+    let pml3_idx = virt.pml3_index();
+    let pml2_idx = virt.pml2_index();
+    let pml1_idx = virt.pml1_index();
 
     // Ensure all parent tables exist
-    ensure_pd_entry(pml4_idx, pdpt_idx, pd_idx, flags)?;
+    ensure_pml2_entry(pml4_idx, pml3_idx, pml2_idx, flags)?;
 
     // Check if already mapped
-    let existing = read_pt(pml4_idx, pdpt_idx, pd_idx, pt_idx);
+    let existing = read_pml1(pml4_idx, pml3_idx, pml2_idx, pml1_idx);
     if existing.is_present() {
         return Err(PagingError::AlreadyMapped);
     }
 
     // Create the mapping
     let entry = PageTableEntry::new(phys, flags | flags::PRESENT);
-    write_pt(pml4_idx, pdpt_idx, pd_idx, pt_idx, entry);
+    write_pml1(pml4_idx, pml3_idx, pml2_idx, pml1_idx, entry);
 
     // Invalidate TLB for this address
     invalidate_page(virt);
@@ -598,21 +607,21 @@ pub fn map_2mb(virt: VirtAddr, phys: PhysAddr, flags: u64) -> Result<(), PagingE
     }
 
     let pml4_idx = virt.pml4_index();
-    let pdpt_idx = virt.pdpt_index();
-    let pd_idx = virt.pd_index();
+    let pml3_idx = virt.pml3_index();
+    let pml2_idx = virt.pml2_index();
 
-    // Ensure PML4 and PDPT entries exist
-    ensure_pdpt_entry(pml4_idx, pdpt_idx, flags)?;
+    // Ensure PML4 and PML3 entries exist
+    ensure_pml3_entry(pml4_idx, pml3_idx, flags)?;
 
     // Check if already mapped
-    let existing = read_pd(pml4_idx, pdpt_idx, pd_idx);
+    let existing = read_pml2(pml4_idx, pml3_idx, pml2_idx);
     if existing.is_present() {
         return Err(PagingError::AlreadyMapped);
     }
 
     // Create the huge page mapping
     let entry = PageTableEntry::new(phys, flags | flags::PRESENT | flags::HUGE_PAGE);
-    write_pd(pml4_idx, pdpt_idx, pd_idx, entry);
+    write_pml2(pml4_idx, pml3_idx, pml2_idx, entry);
 
     // Invalidate TLB
     invalidate_page(virt);
@@ -632,20 +641,20 @@ pub fn map_1gb(virt: VirtAddr, phys: PhysAddr, flags: u64) -> Result<(), PagingE
     }
 
     let pml4_idx = virt.pml4_index();
-    let pdpt_idx = virt.pdpt_index();
+    let pml3_idx = virt.pml3_index();
 
     // Ensure PML4 entry exists
     ensure_pml4_entry(pml4_idx, flags)?;
 
     // Check if already mapped
-    let existing = read_pdpt(pml4_idx, pdpt_idx);
+    let existing = read_pml3(pml4_idx, pml3_idx);
     if existing.is_present() {
         return Err(PagingError::AlreadyMapped);
     }
 
     // Create the huge page mapping
     let entry = PageTableEntry::new(phys, flags | flags::PRESENT | flags::HUGE_PAGE);
-    write_pdpt(pml4_idx, pdpt_idx, entry);
+    write_pml3(pml4_idx, pml3_idx, entry);
 
     // Invalidate TLB
     invalidate_page(virt);
@@ -660,9 +669,9 @@ pub fn unmap_4kb(virt: VirtAddr) -> Result<Frame, PagingError> {
     }
 
     let pml4_idx = virt.pml4_index();
-    let pdpt_idx = virt.pdpt_index();
-    let pd_idx = virt.pd_index();
-    let pt_idx = virt.pt_index();
+    let pml3_idx = virt.pml3_index();
+    let pml2_idx = virt.pml2_index();
+    let pml1_idx = virt.pml1_index();
 
     // Walk the page table hierarchy
     let pml4_entry = read_pml4(pml4_idx);
@@ -670,31 +679,31 @@ pub fn unmap_4kb(virt: VirtAddr) -> Result<Frame, PagingError> {
         return Err(PagingError::NotMapped);
     }
 
-    let pdpt_entry = read_pdpt(pml4_idx, pdpt_idx);
-    if !pdpt_entry.is_present() {
+    let pml3_entry = read_pml3(pml4_idx, pml3_idx);
+    if !pml3_entry.is_present() {
         return Err(PagingError::NotMapped);
     }
-    if pdpt_entry.is_huge() {
+    if pml3_entry.is_huge() {
         return Err(PagingError::HugePageConflict);
     }
 
-    let pd_entry = read_pd(pml4_idx, pdpt_idx, pd_idx);
-    if !pd_entry.is_present() {
+    let pml2_entry = read_pml2(pml4_idx, pml3_idx, pml2_idx);
+    if !pml2_entry.is_present() {
         return Err(PagingError::NotMapped);
     }
-    if pd_entry.is_huge() {
+    if pml2_entry.is_huge() {
         return Err(PagingError::HugePageConflict);
     }
 
-    let pt_entry = read_pt(pml4_idx, pdpt_idx, pd_idx, pt_idx);
-    if !pt_entry.is_present() {
+    let pml1_entry = read_pml1(pml4_idx, pml3_idx, pml2_idx, pml1_idx);
+    if !pml1_entry.is_present() {
         return Err(PagingError::NotMapped);
     }
 
-    let frame = pt_entry.frame();
+    let frame = pml1_entry.frame();
 
     // Clear the entry
-    write_pt(pml4_idx, pdpt_idx, pd_idx, pt_idx, PageTableEntry::empty());
+    write_pml1(pml4_idx, pml3_idx, pml2_idx, pml1_idx, PageTableEntry::empty());
 
     // Invalidate TLB
     invalidate_page(virt);
@@ -709,9 +718,9 @@ pub fn translate(virt: VirtAddr) -> Option<PhysAddr> {
     }
 
     let pml4_idx = virt.pml4_index();
-    let pdpt_idx = virt.pdpt_index();
-    let pd_idx = virt.pd_index();
-    let pt_idx = virt.pt_index();
+    let pml3_idx = virt.pml3_index();
+    let pml2_idx = virt.pml2_index();
+    let pml1_idx = virt.pml1_index();
     let offset = virt.page_offset();
 
     // Walk the page table hierarchy
@@ -720,35 +729,35 @@ pub fn translate(virt: VirtAddr) -> Option<PhysAddr> {
         return None;
     }
 
-    let pdpt_entry = read_pdpt(pml4_idx, pdpt_idx);
-    if !pdpt_entry.is_present() {
+    let pml3_entry = read_pml3(pml4_idx, pml3_idx);
+    if !pml3_entry.is_present() {
         return None;
     }
-    if pdpt_entry.is_huge() {
+    if pml3_entry.is_huge() {
         // 1GB page
-        let base = pdpt_entry.addr().as_u64();
+        let base = pml3_entry.addr().as_u64();
         let page_offset = virt.as_u64() & 0x3FFFFFFF; // Lower 30 bits
         return Some(PhysAddr::new(base + page_offset));
     }
 
-    let pd_entry = read_pd(pml4_idx, pdpt_idx, pd_idx);
-    if !pd_entry.is_present() {
+    let pml2_entry = read_pml2(pml4_idx, pml3_idx, pml2_idx);
+    if !pml2_entry.is_present() {
         return None;
     }
-    if pd_entry.is_huge() {
+    if pml2_entry.is_huge() {
         // 2MB page
-        let base = pd_entry.addr().as_u64();
+        let base = pml2_entry.addr().as_u64();
         let page_offset = virt.as_u64() & 0x1FFFFF; // Lower 21 bits
         return Some(PhysAddr::new(base + page_offset));
     }
 
-    let pt_entry = read_pt(pml4_idx, pdpt_idx, pd_idx, pt_idx);
-    if !pt_entry.is_present() {
+    let pml1_entry = read_pml1(pml4_idx, pml3_idx, pml2_idx, pml1_idx);
+    if !pml1_entry.is_present() {
         return None;
     }
 
     // 4KB page
-    let base = pt_entry.addr().as_u64();
+    let base = pml1_entry.addr().as_u64();
     Some(PhysAddr::new(base + offset as u64))
 }
 
@@ -759,35 +768,35 @@ pub fn get_mapping_info(virt: VirtAddr) -> Option<(PhysAddr, PageSize, u64)> {
     }
 
     let pml4_idx = virt.pml4_index();
-    let pdpt_idx = virt.pdpt_index();
-    let pd_idx = virt.pd_index();
-    let pt_idx = virt.pt_index();
+    let pml3_idx = virt.pml3_index();
+    let pml2_idx = virt.pml2_index();
+    let pml1_idx = virt.pml1_index();
 
     let pml4_entry = read_pml4(pml4_idx);
     if !pml4_entry.is_present() {
         return None;
     }
 
-    let pdpt_entry = read_pdpt(pml4_idx, pdpt_idx);
-    if !pdpt_entry.is_present() {
+    let pml3_entry = read_pml3(pml4_idx, pml3_idx);
+    if !pml3_entry.is_present() {
         return None;
     }
-    if pdpt_entry.is_huge() {
-        return Some((pdpt_entry.addr(), PageSize::Huge, pdpt_entry.flags()));
+    if pml3_entry.is_huge() {
+        return Some((pml3_entry.addr(), PageSize::Huge, pml3_entry.flags()));
     }
 
-    let pd_entry = read_pd(pml4_idx, pdpt_idx, pd_idx);
-    if !pd_entry.is_present() {
+    let pml2_entry = read_pml2(pml4_idx, pml3_idx, pml2_idx);
+    if !pml2_entry.is_present() {
         return None;
     }
-    if pd_entry.is_huge() {
-        return Some((pd_entry.addr(), PageSize::Large, pd_entry.flags()));
+    if pml2_entry.is_huge() {
+        return Some((pml2_entry.addr(), PageSize::Large, pml2_entry.flags()));
     }
 
-    let pt_entry = read_pt(pml4_idx, pdpt_idx, pd_idx, pt_idx);
-    if !pt_entry.is_present() {
+    let pml1_entry = read_pml1(pml4_idx, pml3_idx, pml2_idx, pml1_idx);
+    if !pml1_entry.is_present() {
         return None;
     }
 
-    Some((pt_entry.addr(), PageSize::Small, pt_entry.flags()))
+    Some((pml1_entry.addr(), PageSize::Small, pml1_entry.flags()))
 }
