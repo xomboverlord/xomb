@@ -82,6 +82,7 @@ extern crate alloc;
 pub mod arch;
 pub mod boot_info;
 pub mod memory;
+pub mod process;
 pub mod serial;
 
 #[cfg(feature = "multiboot2")]
@@ -150,6 +151,36 @@ pub fn kernel_init(info: &BootInfo) -> ! {
     writeln!(serial, "").ok();
     writeln!(serial, ">>> Initializing interrupt handling...").ok();
     arch::x86_64::interrupts::init();
+
+    // Initialize process subsystem
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Initializing process subsystem...").ok();
+    process::init();
+    writeln!(serial, "    Process 0 (kernel) initialized").ok();
+    writeln!(serial, "    Active processes: {}", process::count()).ok();
+
+    // Test creating a new process and switching address spaces
+    writeln!(serial, "").ok();
+    writeln!(serial, ">>> Testing process creation...").ok();
+    match process::create() {
+        Ok(pid) => {
+            writeln!(serial, "    Created process {} (page table: {:#x})",
+                     pid, process::get(pid).unwrap().page_table).ok();
+
+            // Test address space switch
+            unsafe {
+                if process::switch_address_space(pid).is_ok() {
+                    writeln!(serial, "    Switched to process {} address space", pid).ok();
+                    process::switch_to_kernel();
+                    writeln!(serial, "    Returned to kernel address space").ok();
+                }
+            }
+            writeln!(serial, "    Active processes: {}", process::count()).ok();
+        }
+        Err(e) => {
+            writeln!(serial, "    Failed to create process: {:?}", e).ok();
+        }
+    }
 
     // Test allocating a few frames
     writeln!(serial, "").ok();
