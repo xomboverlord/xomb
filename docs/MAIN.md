@@ -25,3 +25,5 @@ These operations need to be verifiable in our kernel. Applications rely on these
 The unanswered questions so far have to do with scheduling and preemption.
 
 For stage 1, we will have a non-preemptive single process kernel to sidestep solving these problems.
+
+Refer to [PROCESS](PROCESS.md) for information about processes, [MEMORY](MEMORY.md) for information about generic page manipulation primitives, [RESOURCE](RESOURCE.md) for information about higher-level page collection primitives, and [UPCALL](UPCALL.md) for information about upcall semantics.
